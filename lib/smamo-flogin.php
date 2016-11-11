@@ -1,89 +1,122 @@
 <?php
-
 add_action('init', 'smamo_flogin');
-function smamo_flogin($fb_login_button = false, $button_text = false){
+function smamo_flogin($fb_login_button = false, $button_text = false, $redirect_uri = false){
 
-    // Standard button text
-    if(!$button_text){$button_text = __('Log ind med facebook', 'smamo_flogin');}
+    /**-----------------------------------------------**/
+    // Login / Attach / Create user
+    /**-----------------------------------------------**/
 
-    //Call Facebook API
-    $fb = new Facebook(array(
-      'appId'  => get_theme_mod('smamo_flogin_app_id'),
-      'secret' => get_theme_mod('smamo_flogin_app_secret'),
-    ));
+    if (isset($_GET['code']) && !$fb_login_button) {
 
-    $fb_usr = $fb->getUser();
-    if($fb_usr){
-        $user_profile = $fb->api('/me?fields=id,first_name,last_name,email,gender,locale,picture');
+        $fb = new Facebook(array(
+          'appId'  => get_theme_mod('smamo_flogin_app_id'),
+          'secret' => get_theme_mod('smamo_flogin_app_secret'),
+        ));
 
-        if (isset($_GET['code']) && !$fb_login_button) {
+        $fb_usr = $fb->getUser();
+        if($fb_usr){
+            $fb_profile = $fb->api('/me?fields=id,first_name,last_name,email');
 
-            $users = get_user_by( 'email', $user_profile['email'] );
-            $usr_id = $users->ID;
-            $usr_name = $user_profile['first_name'];
-            $usr_fname = sanitize_user( $user_profile['first_name'] );
-            $usr_lname = sanitize_user( $user_profile['last_name'] );
-            $usr_name = sanitize_user( $usr_name );
-            $usr_name = str_replace(array(" ","."), "", $usr_name);
-            $usr_name_check = username_exists( $usr_name );
+            $fb_id = $fb_profile['id'];
 
-            if($usr_id){
+            $user_query = get_users(array(
+                'meta_key' => 'facebook_id',
+                'meta_value' => $fb_id,
+            ));
 
-                    $users = get_user_by( 'id', $usr_id );
-                    $users = get_user_by('login',$users->user_login);
-
-                    update_user_meta( $usr_id, 'facebook_profile_id', $user_profile['id'] );
-                    update_user_meta( $usr_id, 'facebook_profile_img', $user_profile['picture']['data']['url'] );
-                    update_user_meta( $usr_id, 'smamo_display_name', $usr_fname . ' ' . $usr_lname);
-                    update_user_meta( $usr_id, 'first_name', $usr_fname );
-                    update_user_meta( $usr_id, 'last_name', $usr_lname );
-            }
-
-            else{
-
-                if ( $usr_name_check ) {
-
-                    $usr_name = $usr_fname;
-                    $usr_name = sanitize_user( $usr_name );
-                    $usr_name = str_replace(array(" ","."),"",$usr_name);
-                    $usr_name_check = username_exists( $usr_name );
-                    $usr_name = $usr_lname;
-                    $usr_name = sanitize_user( $usr_name );
-                    $usr_name = str_replace(array(" ","."),"",$usr_name);
-                    $usr_name_check = username_exists( $usr_name );
-                    $usr_name = $usr_fname;
-                    $usr_name = sanitize_user( $usr_name );
-                    $usr_name = str_replace(array(" ","."),"",$usr_name);
-                    $usr_name = $usr_name . rand(100, 999);
-                    $usr_name_check = username_exists( $usr_name );
-                }
-
-                if ( !$usr_name_check and email_exists($user_profile['email']) == false ) {
-
-                    $random_password = wp_generate_password( $length = 12, $include_standard_special_chars = false );
-                    $usr_id = wp_create_user( $usr_name, $random_password, $user_profile['email'] );
-                    $users = get_user_by( 'id', $usr_id );
-
-                    update_user_meta( $usr_id, 'facebook_profile_id', $user_profile['id'] );
-                    update_user_meta( $usr_id, 'facebook_profile_img', $user_profile['picture']['data']['url'] );
-                    update_user_meta( $usr_id, 'smamo_display_name', $usr_fname . ' ' . $usr_lname);
-                    update_user_meta( $usr_id, 'first_name', $usr_fname );
-                    update_user_meta( $usr_id, 'last_name', $usr_lname );
+            // Tilknyt facebook til eksisterende bruger
+            if(is_user_logged_in()){
+                $u = wp_get_current_user();
+                $has_id = get_user_meta($u->ID,'facebook_id',true);
+                if('' === $has_id){
+                    add_user_meta($u->ID,'facebook_id', $fb_id, true);
                 }
             }
-            //login user and redirect
-            wp_set_current_user( $usr_id, $users->user_login );
-            wp_set_auth_cookie( $usr_id, false, is_ssl() );
-            wp_safe_redirect( site_url() );
+
+            // Log ind med facebook
+            if(!is_user_logged_in() && !empty($user_query)){
+                $current_user = $user_query[0];
+
+                $user = get_user_by( 'id', $current_user->ID );
+                if( $user ) {
+                    wp_set_current_user( $user->ID, $user->user_login );
+                    wp_set_auth_cookie( $user->ID );
+                    do_action( 'wp_login', $user->user_login );
+                }
+
+            }
+
+            // Opret bruger med facebook
+            if(!is_user_logged_in() && empty($user_query)){
+
+
+                $pswd = wp_generate_password(32, true, true);
+
+                $login = $fb_profile['first_name'] . ' ' . $fb_profile['last_name'];
+
+                $i = '';
+                $found = false;
+
+                while (!$found) {
+                    $user = get_user_by('name', $login . $i);
+                    if(!$user) {
+                        $found = true;
+                        $login .= $i;
+                    }
+
+                    if($i === ''){$i = 1;}
+                    else{$i++;}
+                }
+
+                $new_user = wp_insert_user( array(
+                    'first_name' => $fb_profile['first_name'],
+                    'last_name' => $fb_profile['last_name'],
+                    'user_login' => $login,
+                    'user_email' => $fb_profile['email'],
+                    'user_nicename' => $fb_profile['first_name'] . ' ' . $fb_profile['last_name'],
+                    'user_pass' => $pswd,
+                ));
+
+                if(!is_wp_error($new_user)){
+                    add_user_meta($new_user, 'facebook_id', $fb_profile['id'], true);
+
+                    $user = get_user_by( 'id', $new_user );
+                    if( $user ) {
+                        wp_set_current_user( $user_id, $user->user_login );
+                        wp_set_auth_cookie( $user_id );
+                        do_action( 'wp_login', $user->user_login );
+                    }
+                }
+            }
         }
     }
 
-    //display Facebook Login button
-    if ($fb_login_button == true && !$fb_usr) {
+    /**-----------------------------------------------**/
+    // Login / Attach / Create user button
+    /**-----------------------------------------------**/
 
-        $fb_usr = null;
-        $login_url = $fb->getLoginUrl(array('redirect_uri' => get_theme_mod('smamo_flogin_redirect_uri'), 'scope' => 'email'));
-        $output = '<a class="smamo-flogin-btn" href='.$login_url.'>' . $button_text . '</a>';
-        echo $output;
+    if ($fb_login_button == true) {
+
+        if(!is_user_logged_in() || '' === get_user_meta(get_current_user_id(), 'facebook_id', true)){
+
+            $fb = new Facebook(array(
+              'appId'  => get_theme_mod('smamo_flogin_app_id'),
+              'secret' => get_theme_mod('smamo_flogin_app_secret'),
+            ));
+
+            // Redirect
+            if(!$redirect_uri){
+                $redirect_uri = get_theme_mod('smamo_flogin_redirect_uri');
+            }
+
+            // Standard button text
+            if(!$button_text){$button_text = __('Log ind med facebook', 'smamo_flogin');}
+
+
+            $login_url = $fb->getLoginUrl(array('redirect_uri' => $redirect_uri, 'scope' => 'email'));
+
+            $output = '<a class="smamo-flogin-btn" href='.$login_url.'>' . $button_text . '</a>';
+            echo apply_filters('smamo_flogin', $output);
+        }
     }
 }
